@@ -277,6 +277,24 @@ fixRelocations(Rpl &file)
 }
 
 /**
+ * Section specific patches.
+ */
+static bool
+fixSections(Rpl &file)
+{
+	// Some rpx don't set sh_info for SHT_SYMTAB properly, so try to fix it up here
+	for (auto &section : file.sections) {
+		if (section.header.type == elf::SHT_SYMTAB) {
+			if (section.header.info * section.header.entsize > section.header.size) {
+				section.header.info = 1u;
+			}
+		}
+	}
+
+	return true;
+}
+
+/**
  * Calculate section file offsets.
  */
 static bool
@@ -588,6 +606,11 @@ int main(int argc, char **argv)
 		return -1;
 	}
 	
+	if (!fixSections(rpl)) {
+		fmt::print("ERROR: fixSections failed.\n");
+		return -1;
+	}
+
 	if (!relocateImports(rpl)) {
 		fmt::print("ERROR: relocateImports failed.\n");
 		return -1;
