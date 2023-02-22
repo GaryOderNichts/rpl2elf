@@ -2,6 +2,7 @@
 #include "elf.h"
 #include <string>
 #include <vector>
+#include <array>
 
 struct Section
 {
@@ -14,6 +15,7 @@ struct Rpl
 {
    elf::Header header;
    uint32_t fileSize;
+   std::array<elf::ProgramHeader, 3> segments;
    std::vector<Section> sections;
 };
 

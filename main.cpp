@@ -300,6 +300,10 @@ fixSections(Rpl &file)
 static bool
 calculateSectionOffsets(Rpl &file)
 {
+	// Let's move shoff back to make space for phoff
+	file.header.phoff = file.header.shoff;
+	file.header.shoff += align_up(static_cast<uint32_t>(file.sections.size() * sizeof(elf::ProgramHeader)), 64);
+
 	auto offset = file.header.shoff;
 	offset += align_up(static_cast<uint32_t>(file.sections.size() * sizeof(elf::SectionHeader)), 64);
 
@@ -438,6 +442,83 @@ calculateSectionOffsets(Rpl &file)
 }
 
 /**
+ * Generate segments based on sections to allow usage in GDB.
+ */
+static bool
+generateSegments(Rpl &file)
+{
+	auto textMin = 0xFFFFFFFFu;
+	auto textMax = 0u;
+	auto textOffsetMin = 0xFFFFFFFFu;
+
+	auto dataMin = 0xFFFFFFFFu;
+	auto dataMax = 0u;
+	auto dataOffsetMin = 0xFFFFFFFFu;
+	auto dataOffsetMax = 0u;
+
+	auto importsMin = 0xFFFFFFFFu;
+	auto importsMax = 0u;
+	auto importsOffsetMin = 0xFFFFFFFFu;
+
+	// find bounds
+	for (const auto &section : file.sections) {
+		if (!(section.header.flags & elf::SHF_ALLOC)) {
+			continue;
+		}
+
+		if (section.header.type == elf::SHT_PROGBITS) {
+			if (section.header.flags & elf::SHF_EXECINSTR) {
+				textMin = std::min<uint32_t>(textMin, section.header.addr);
+				textMax = std::max<uint32_t>(textMax, section.header.addr + section.header.size);
+				textOffsetMin = std::min<uint32_t>(textOffsetMin, section.header.offset);
+			} else {
+				dataMin = std::min<uint32_t>(dataMin, section.header.addr);
+				dataMax = std::max<uint32_t>(dataMax, section.header.addr + section.header.size);
+				dataOffsetMin = std::min<uint32_t>(dataOffsetMin, section.header.offset);
+				dataOffsetMax = std::max<uint32_t>(dataOffsetMax, section.header.offset + section.header.size);
+			}
+		} else if (section.header.type == elf::SHT_NOBITS) {
+			dataMin = std::min<uint32_t>(dataMin, section.header.addr);
+			dataMax = std::max<uint32_t>(dataMax, section.header.addr + section.header.size);
+		} else if (section.header.type == elf::SHT_RPL_IMPORTS) {
+			importsMin = std::min<uint32_t>(importsMin, section.header.addr);
+			importsMax = std::max<uint32_t>(importsMax, section.header.addr + section.header.size);
+			importsOffsetMin = std::min<uint32_t>(importsOffsetMin, section.header.offset);	
+		}
+	}
+
+	// code
+	file.segments[0].type = elf::PT_LOAD;
+	file.segments[0].offset = textOffsetMin;
+	file.segments[0].vaddr = file.segments[0].paddr = textMin;
+	file.segments[0].filesz = file.segments[0].memsz = textMax - textMin;
+	file.segments[0].flags = (uint32_t) (elf::PF_R | elf::PF_X);
+	file.segments[0].align = 4u;
+
+	// data
+	file.segments[1].type = elf::PT_LOAD;
+	file.segments[1].offset = dataOffsetMin;
+	file.segments[1].vaddr = file.segments[1].paddr = dataMin;
+	file.segments[1].memsz = dataMax - dataMin;
+	file.segments[1].filesz = dataOffsetMax - dataOffsetMin;
+	file.segments[1].flags = (uint32_t) (elf::PF_R | elf::PF_W);
+	file.segments[1].align = 4u;
+
+	// imports
+	file.segments[2].type = elf::PT_LOAD;
+	file.segments[2].offset = importsOffsetMin;
+	file.segments[2].vaddr = file.segments[2].paddr = importsMin;
+	file.segments[2].filesz = file.segments[2].memsz = importsMax - importsMin;
+	file.segments[2].flags = (uint32_t) (elf::PF_R | elf::PF_X);
+	file.segments[2].align = 4u;
+
+	file.header.phnum = (uint16_t) file.segments.size();
+	file.header.phentsize = (uint16_t) sizeof(elf::ProgramHeader);
+
+	return true;
+}
+
+/**
  * Write out the final ELF.
  */
 static bool
@@ -469,6 +550,12 @@ writeElf(Rpl &file, const std::string &filename)
 			out.seekp(section.header.offset, std::ios::beg);
 			out.write(section.data.data(), section.data.size());
 		}
+	}
+
+	// Write program headers
+	out.seekp(file.header.phoff, std::ios::beg);
+	for (const auto &segment : file.segments) {
+		out.write(reinterpret_cast<const char *>(&segment), sizeof(elf::ProgramHeader));
 	}
 
 	return true;
@@ -621,6 +708,11 @@ int main(int argc, char **argv)
 		return -1;
 	}
 	
+	if (!generateSegments(rpl)) {
+		fmt::print("ERROR: generateSegments failed.\n");
+		return -1;
+	}
+
 	if (!writeElf(rpl, dst)) {
 		fmt::print("ERROR: writeElf failed.\n");
 		return -1;
