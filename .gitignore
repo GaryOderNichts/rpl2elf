@@ -1,0 +1,5 @@
+/.vscode
+rpl2elf
+*.elf
+*.rpx
+*.wps
